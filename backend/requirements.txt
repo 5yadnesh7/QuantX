@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+motor
+pymongo
+numpy
+pandas
+numba
+scipy
+arch
+httpx
+websockets
+redis
+orjson
+python-dotenv
+pydantic
+pydantic-settings
+upstox-python-sdk

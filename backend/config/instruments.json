@@ -1,0 +1,64 @@
+{
+  "instruments": [
+    {
+      "label": "NIFTY 50",
+      "symbol": "NIFTY",
+      "instrumentKey": "NSE_INDEX|Nifty 50",
+      "expireType": "WEEKLY",
+      "weekly": true,
+      "exchange": "NSE",
+      "nextStep": 50,
+      "nextExpiries": [
+        "2025-12-02",
+        "2025-12-09",
+        "2025-12-16",
+        "2025-12-23"
+      ]
+    },
+    {
+      "label": "BANK NIFTY",
+      "symbol": "BANKNIFTY",
+      "instrumentKey": "NSE_INDEX|Nifty Bank",
+      "expireType": "MONTHLY",
+      "weekly": false,
+      "exchange": "NSE",
+      "nextStep": 100,
+      "nextExpiries": [
+        "2025-12-30",
+        "2026-01-27",
+        "2026-02-24",
+        "2026-03-31"
+      ]
+    },
+    {
+      "label": "FINNIFTY",
+      "symbol": "FINNIFTY",
+      "instrumentKey": "NSE_INDEX|Nifty Fin Service",
+      "expireType": "MONTHLY",
+      "weekly": false,
+      "nextStep": 50,
+      "exchange": "NSE",
+      "nextExpiries": [
+        "2025-12-30",
+        "2026-01-27",
+        "2026-02-24",
+        "2026-03-31"
+      ]
+    },
+    {
+      "label": "SENSEX",
+      "symbol": "SENSEX",
+      "instrumentKey": "BSE_INDEX|SENSEX",
+      "expireType": "WEEKLY",
+      "weekly": true,
+      "nextStep": 100,
+      "exchange": "BSE",
+      "nextExpiries": [
+        "2025-12-04",
+        "2025-12-11",
+        "2025-12-18",
+        "2025-12-25"
+      ]
+    }
+  ]
+}

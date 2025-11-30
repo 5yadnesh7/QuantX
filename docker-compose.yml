@@ -1,0 +1,72 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: quantx-backend
+    environment:
+      - QUANTX_MONGODB_URI=mongodb://mongodb:27017
+      - QUANTX_MONGODB_DB=quantx
+      - QUANTX_REDIS_URL=redis://redis:6379/0
+      - QUANTX_USE_UPSTOX_LIVE=true
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - quantx-net
+    volumes:
+      - ./backend/app:/app/app
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: quantx-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+      - WDS_SOCKET_PORT=3000
+      - REACT_APP_API_BASE=http://localhost:8000
+      - REACT_APP_WS_URL=ws://localhost:8000/ws/signals
+    depends_on:
+      - backend
+    networks:
+      - quantx-net
+    volumes:
+      - ./frontend:/app/frontend
+      - /app/frontend/node_modules
+
+  mongodb:
+    image: mongo:6
+    container_name: quantx-mongodb
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - quantx-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: quantx-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      - quantx-net
+
+networks:
+  quantx-net:
+    driver: bridge
+
+volumes:
+  mongo-data:
+    driver: local
+
