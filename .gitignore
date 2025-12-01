@@ -23,5 +23,3 @@ frontend/build/
 # OS
 .DS_Store
 
-# Config
-backend/config/config.json

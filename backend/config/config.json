@@ -1,0 +1,6 @@
+{
+  "upstox_api_key": "d71cf0c2-2f07-4b2b-ad87-f2c1e49c58ef",
+  "upstox_api_secret": "nmoojcls3b",
+  "upstox_redirect_url": "http://localhost:3021",
+  "upstox_access_token": "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI2OEJQS1QiLCJqdGkiOiI2OTJjMGEzZmJhYzQ4MDMwYmFiODM2YWQiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6ZmFsc2UsImlhdCI6MTc2NDQ5Mzg4NywiaXNzIjoidWRhcGktZ2F0ZXdheS1zZXJ2aWNlIiwiZXhwIjoxNzY0NTQwMDAwfQ.uz0p3cGDhtNvk6-GDpfiZj63I6Idr9RL-go3h67DHtU"
+}
