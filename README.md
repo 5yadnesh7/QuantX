@@ -81,7 +81,7 @@ From the project root (`QuantX`):
 This will:
 
 - Build **backend** (`backend/Dockerfile`) and expose FastAPI on `http://localhost:8000`  
-- Build **frontend** (`frontend/Dockerfile`) and expose CRA dev server on `http://localhost:3000`  
+- Build **frontend** (`frontend/Dockerfile`) and expose CRA dev server on `http://localhost:3021`  
 - Start **MongoDB** and **Redis** on the shared `quantx-net` bridge network
 
 ### Local (non-Docker) Development

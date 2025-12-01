@@ -27,11 +27,11 @@ services:
       dockerfile: frontend/Dockerfile
     container_name: quantx-frontend
     ports:
-      - "3000:3000"
+      - "3021:3021"
     environment:
       - CHOKIDAR_USEPOLLING=true
       - WATCHPACK_POLLING=true
-      - WDS_SOCKET_PORT=3000
+      - WDS_SOCKET_PORT=3021
       - REACT_APP_API_BASE=http://localhost:8000
       - REACT_APP_WS_URL=ws://localhost:8000/ws/signals
     depends_on:

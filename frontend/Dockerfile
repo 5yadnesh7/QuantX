@@ -12,6 +12,8 @@ COPY frontend ./frontend
 
 WORKDIR /app/frontend
 
-EXPOSE 3000
+ENV PORT=3021
+
+EXPOSE 3021
 
 CMD ["npm", "start"]
