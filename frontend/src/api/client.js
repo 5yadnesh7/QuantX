@@ -29,6 +29,12 @@ export const runBacktest = (payload) => api.post('/strategy/backtest', payload);
 export const saveStrategy = (payload) => api.post('/strategy/save', payload);
 export const getBacktestResult = (id) => api.get(`/backtest/results/${id}`);
 
+// Strategy management endpoints
+export const getStrategies = () => api.get('/strategies');
+export const getStrategy = (name) => api.get(`/strategies/${name}`);
+export const deleteStrategy = (name) => api.delete(`/strategies/${name}`);
+export const updateStrategyName = (name, newName) => api.put(`/strategies/${name}`, { new_name: newName });
+
 export const getModelsInsights = () => api.get('/models/insights');
 export const getFiiDiiFlows = () => api.get('/flows/fii-dii');
 

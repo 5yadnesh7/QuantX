@@ -84,6 +84,8 @@ class DashboardPredictionResponse(BaseModel):
   window_strikes: List[DashboardStrikeSnapshot]
   pcr_oi: Optional[float] = None
   pcr_volume: Optional[float] = None
+  window_pcr_oi: Optional[float] = None
+  window_pcr_volume: Optional[float] = None
   net_delta: Optional[float] = None
   prediction: Optional[str] = None
   confidence: Optional[float] = None
@@ -134,6 +136,8 @@ async def get_dashboard_prediction(symbol: str, expiry: Optional[str] = None):
       window_strikes=[],
       pcr_oi=None,
       pcr_volume=None,
+      window_pcr_oi=None,
+      window_pcr_volume=None,
       net_delta=None,
       prediction=None,
       confidence=None,
@@ -200,6 +204,13 @@ async def get_dashboard_prediction(symbol: str, expiry: Optional[str] = None):
       spot=float(spot_val),
       atm_strike=0.0,
       window_strikes=[],
+      pcr_oi=None,
+      pcr_volume=None,
+      window_pcr_oi=None,
+      window_pcr_volume=None,
+      net_delta=None,
+      prediction=None,
+      confidence=None,
     )
 
   atm_strike = min(all_strikes, key=lambda k: abs(k - float(spot_val)))
@@ -349,6 +360,8 @@ async def get_dashboard_prediction(symbol: str, expiry: Optional[str] = None):
     window_strikes=window_strikes,
     pcr_oi=pcr_oi_full,
     pcr_volume=pcr_vol_full,
+    window_pcr_oi=window_pcr_oi,
+    window_pcr_volume=window_pcr_volume,
     net_delta=net_delta,
     prediction=prediction,
     confidence=confidence,
@@ -844,6 +857,114 @@ async def post_strategy_save(req: StrategySaveRequest):
   return {"status": "saved"}
 
 
+# Default strategies that come with the system
+DEFAULT_STRATEGIES = [
+  {
+    "name": "Mean Reversion Call",
+    "mode": "LIVE",
+    "conditions": [{"indicator": "pcr_oi", "operator": "<", "threshold": 0.7}],
+    "filters": [],
+    "actions": [{"side": "BUY", "quantity": 1, "instrument": "ATM_CALL"}],
+    "exits": [{"type": "take_profit", "value": 0.3}, {"type": "stop_loss", "value": 0.15}],
+    "multi_leg": False,
+    "is_default": True,
+  },
+  {
+    "name": "Momentum Put",
+    "mode": "LIVE",
+    "conditions": [{"indicator": "pcr_oi", "operator": ">", "threshold": 1.2}],
+    "filters": [],
+    "actions": [{"side": "BUY", "quantity": 1, "instrument": "ATM_PUT"}],
+    "exits": [{"type": "take_profit", "value": 0.25}, {"type": "stop_loss", "value": 0.2}],
+    "multi_leg": False,
+    "is_default": True,
+  },
+]
+
+
+@router.get("/strategies")
+async def get_strategies():
+  """List all strategies (user-created + default)"""
+  db = get_db()
+  user_strategies = []
+  try:
+    docs = await db.strategies.find({}).to_list(1000)
+    for d in docs:
+      # Convert MongoDB document to dict, handling ObjectId
+      strategy_dict = dict(d)
+      # Convert _id to string if it exists
+      if "_id" in strategy_dict:
+        strategy_dict["_id"] = str(strategy_dict["_id"])
+      strategy_dict["is_default"] = False
+      user_strategies.append(strategy_dict)
+  except Exception as e:
+    print(f"Error fetching strategies from DB: {e}")
+  
+  # Combine with default strategies
+  all_strategies = DEFAULT_STRATEGIES + user_strategies
+  return {"strategies": all_strategies}
+
+
+@router.get("/strategies/{name}")
+async def get_strategy(name: str):
+  """Get a specific strategy by name"""
+  # Check default strategies first
+  default = next((s for s in DEFAULT_STRATEGIES if s["name"] == name), None)
+  if default:
+    return {"strategy": default}
+  
+  # Check user strategies
+  db = get_db()
+  doc = await db.strategies.find_one({"name": name})
+  if not doc:
+    raise HTTPException(status_code=404, detail=f"Strategy '{name}' not found")
+  
+  # Convert MongoDB document to dict, handling ObjectId
+  strategy_dict = dict(doc)
+  # Convert _id to string if it exists
+  if "_id" in strategy_dict:
+    strategy_dict["_id"] = str(strategy_dict["_id"])
+  
+  return {"strategy": strategy_dict}
+
+
+@router.delete("/strategies/{name}")
+async def delete_strategy(name: str):
+  """Delete a user-created strategy (cannot delete default strategies)"""
+  # Check if it's a default strategy
+  if any(s["name"] == name for s in DEFAULT_STRATEGIES):
+    raise HTTPException(status_code=400, detail="Cannot delete default strategies")
+  
+  db = get_db()
+  result = await db.strategies.delete_one({"name": name})
+  if result.deleted_count == 0:
+    raise HTTPException(status_code=404, detail=f"Strategy '{name}' not found")
+  
+  return {"status": "deleted"}
+
+
+class StrategyRenameRequest(BaseModel):
+  new_name: str
+
+
+@router.put("/strategies/{name}")
+async def update_strategy_name(name: str, req: StrategyRenameRequest):
+  """Update a strategy's name (cannot rename default strategies)"""
+  # Check if it's a default strategy
+  if any(s["name"] == name for s in DEFAULT_STRATEGIES):
+    raise HTTPException(status_code=400, detail="Cannot rename default strategies")
+  
+  db = get_db()
+  result = await db.strategies.update_one(
+    {"name": name},
+    {"$set": {"name": req.new_name}}
+  )
+  if result.matched_count == 0:
+    raise HTTPException(status_code=404, detail=f"Strategy '{name}' not found")
+  
+  return {"status": "updated", "old_name": name, "new_name": req.new_name}
+
+
 @router.get("/backtest/results/{id}", response_model=BacktestResult)
 async def get_backtest_result(id: str):
   if id in _BACKTEST_STORE:
@@ -877,30 +998,278 @@ async def get_models_insights():
   )
 
 
+async def fetch_fii_dii_from_nse(date: Optional[datetime] = None) -> List[FiiDiiDay]:
+  """
+  Fetch FII/DII data from NSE website for a specific date or today.
+  NSE provides this data via their API endpoint.
+  Note: NSE requires proper session cookies and headers.
+  """
+  try:
+    # NSE FII/DII data endpoint - using their API endpoint
+    # Note: NSE requires proper headers and session cookies to avoid blocking
+    base_headers = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept": "application/json, text/plain, */*",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Accept-Encoding": "gzip, deflate, br",
+      "Connection": "keep-alive",
+      "Sec-Fetch-Dest": "empty",
+      "Sec-Fetch-Mode": "cors",
+      "Sec-Fetch-Site": "same-origin",
+    }
+    
+    # Try NSE's FII/DII API endpoint
+    # Format: https://www.nseindia.com/api/fiidiiTradeReact
+    async with httpx.AsyncClient(
+      timeout=15.0,
+      headers=base_headers,
+      follow_redirects=True,
+      cookies={}
+    ) as client:
+      # First, get a session cookie by visiting the main page (required by NSE)
+      try:
+        main_response = await client.get("https://www.nseindia.com/", timeout=5.0)
+        # Update headers with referer
+        client.headers.update({"Referer": "https://www.nseindia.com/"})
+      except Exception as e:
+        print(f"Warning: Could not establish NSE session: {e}")
+      
+      # Fetch FII/DII data - try multiple endpoints with date range
+      # NSE API might support date parameters for historical data
+      from datetime import datetime, timedelta
+      end_date = datetime.utcnow().strftime("%d-%m-%Y")
+      start_date = (datetime.utcnow() - timedelta(days=7)).strftime("%d-%m-%Y")
+      
+      endpoints = [
+        f"https://www.nseindia.com/api/fiidiiTradeReact?from={start_date}&to={end_date}",
+        f"https://www.nseindia.com/api/fiidiiTradeReact",
+        "https://www.nseindia.com/api/fiidiiTrade",
+        "https://www.nseindia.com/api/fii-dii-data",
+      ]
+      
+      data = None
+      for endpoint in endpoints:
+        try:
+          response = await client.get(endpoint, timeout=10.0)
+          if response.status_code == 200:
+            try:
+              data = response.json()
+              print(f"Successfully fetched from {endpoint}, got {len(data) if isinstance(data, list) else 'dict'} items")
+              break
+            except Exception as e:
+              print(f"Error parsing JSON from {endpoint}: {e}")
+              continue
+          else:
+            print(f"Status {response.status_code} from {endpoint}")
+        except Exception as e:
+          print(f"Error fetching from {endpoint}: {e}")
+          continue
+      
+      if not data:
+        print("Could not fetch from any NSE endpoint - check logs above for details")
+        return []
+      
+      # Debug: print response structure and count
+      data_str = str(data)[:1000]
+      print(f"NSE API response structure (first 1000 chars): {data_str}")
+      if isinstance(data, list):
+        print(f"Total items in response: {len(data)}")
+        if len(data) > 0:
+          print(f"Sample item keys: {list(data[0].keys()) if isinstance(data[0], dict) else 'Not a dict'}")
+      
+      # Parse NSE response format
+      # NSE returns data in various formats - handle multiple structures
+      days = []
+      
+      # Try different response structures
+      data_list = None
+      if isinstance(data, dict):
+        # Try common keys
+        data_list = data.get("data") or data.get("fiiDiiData") or data.get("result") or data.get("records") or data.get("fiiDii")
+        # Also check if it's nested
+        if not data_list and "fiiDii" in data:
+          nested = data.get("fiiDii")
+          if isinstance(nested, dict):
+            data_list = nested.get("data") or nested.get("records")
+      elif isinstance(data, list):
+        data_list = data
+      
+      if not data_list:
+        print(f"No data list found in response. Response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+        return []
+      
+      print(f"Found {len(data_list)} items in data list")
+      
+      if data_list:
+        # NSE returns FII and DII as separate entries, need to group by date
+        # Format: [{'category': 'DII **', 'date': '28-Nov-2025', 'netValue': '4148.48'}, ...]
+        date_to_data = {}  # date -> {fii_net: ..., dii_net: ...}
+        
+        for item in data_list:
+          try:
+            # Get date - handle both dict and object
+            if isinstance(item, dict):
+              date_str = item.get("date") or item.get("tradeDate") or item.get("trade_date")
+              category = item.get("category") or item.get("type") or ""
+              net_value_str = item.get("netValue") or item.get("net_value") or item.get("net")
+            else:
+              date_str = getattr(item, "date", None) or getattr(item, "tradeDate", None)
+              category = getattr(item, "category", "") or getattr(item, "type", "")
+              net_value_str = getattr(item, "netValue", None) or getattr(item, "net_value", None)
+            
+            if not date_str:
+              continue
+            
+            # Parse date (NSE format: "DD-MMM-YYYY" like "28-Nov-2025")
+            date_obj = None
+            try:
+              # Try using dateutil parser first (handles most formats)
+              from dateutil import parser
+              date_obj = parser.parse(str(date_str))
+            except Exception:
+              # Fallback: try common formats manually
+              try:
+                date_obj = datetime.strptime(str(date_str), "%d-%b-%Y")
+              except Exception:
+                try:
+                  date_obj = datetime.strptime(str(date_str), "%Y-%m-%d")
+                except Exception:
+                  try:
+                    date_obj = datetime.strptime(str(date_str), "%d-%m-%Y")
+                  except Exception:
+                    pass
+            
+            if not date_obj:
+              print(f"Could not parse date: {date_str}")
+              continue
+            
+            # Parse net value
+            net_value = None
+            if net_value_str:
+              try:
+                net_value = float(str(net_value_str).replace(",", ""))
+              except Exception:
+                pass
+            
+            if net_value is None:
+              # Try to calculate from buy/sell if available
+              if isinstance(item, dict):
+                buy_val = item.get("buyValue") or item.get("buy_value") or 0
+                sell_val = item.get("sellValue") or item.get("sell_value") or 0
+              else:
+                buy_val = getattr(item, "buyValue", 0) or getattr(item, "buy_value", 0)
+                sell_val = getattr(item, "sellValue", 0) or getattr(item, "sell_value", 0)
+              
+              try:
+                buy = float(str(buy_val).replace(",", "")) if buy_val else 0
+                sell = float(str(sell_val).replace(",", "")) if sell_val else 0
+                net_value = buy - sell
+              except Exception:
+                continue
+            
+            # Group by date and category
+            date_key = date_obj.date().isoformat()
+            if date_key not in date_to_data:
+              date_to_data[date_key] = {"date": date_obj, "fii_net": None, "dii_net": None}
+            
+            # Determine if this is FII or DII based on category
+            category_upper = str(category).upper()
+            if "FII" in category_upper or "FPI" in category_upper:
+              date_to_data[date_key]["fii_net"] = net_value
+            elif "DII" in category_upper:
+              date_to_data[date_key]["dii_net"] = net_value
+            
+          except Exception as e:
+            print(f"Error parsing FII/DII entry: {e}, item: {item}")
+            import traceback
+            traceback.print_exc()
+            continue
+        
+        # Convert grouped data to FiiDiiDay objects
+        # Sort by date descending and take up to 10 days (or all available if less)
+        sorted_dates = sorted(date_to_data.items(), key=lambda x: x[1]["date"], reverse=True)
+        print(f"Grouped into {len(date_to_data)} unique dates: {[d[0] for d in sorted_dates]}")
+        
+        for date_key, data in sorted_dates[:10]:  # Last 10 days
+          if data["fii_net"] is not None or data["dii_net"] is not None:
+            days.append(FiiDiiDay(
+              date=data["date"],
+              fii_net=data["fii_net"] if data["fii_net"] is not None else 0.0,
+              dii_net=data["dii_net"] if data["dii_net"] is not None else 0.0,
+            ))
+        
+        print(f"Successfully parsed {len(days)} FII/DII days from {len(date_to_data)} unique dates")
+        
+        # If we only got today's data, the API might only return latest day
+        # In that case, we should return what we have (it will be cached)
+        if len(days) <= 1:
+          print(f"Note: Only got {len(days)} day(s) of data. NSE API may only return latest day.")
+          print(f"Available dates in response: {list(date_to_data.keys())}")
+        
+        return days
+  except Exception as e:
+    print(f"Error fetching FII/DII from NSE: {e}")
+  
+  return []
+
+
 @router.get("/flows/fii-dii", response_model=FiiDiiResponse)
 async def get_fii_dii_flows():
   """
-  Return recent FII / DII flows from MongoDB if available, otherwise a small
-  synthetic series so the UI has something to display.
+  Return recent FII / DII flows from real NSE data only.
+  Combines today's data from NSE with historical data from MongoDB cache.
+  Returns only real data - no sample/mock data.
   """
-  db = get_db()
-  docs = await db.fii_dii.find().sort("date", -1).limit(10).to_list(10)
-  if docs:
-    days = [FiiDiiDay(**d) for d in docs]
-    return FiiDiiResponse(days=list(reversed(days)))
-
-  # Fallback: last 5 days of sample flows
-  now = datetime.utcnow()
-  sample = []
-  for i in range(5):
-    sample.append(
-      FiiDiiDay(
-        date=now - timedelta(days=i),
-        fii_net=1000.0 * (1 if i % 2 == 0 else -1),
-        dii_net=-800.0 * (1 if i % 2 == 0 else -1),
-      )
-    )
-  return FiiDiiResponse(days=list(reversed(sample)))
+  # Try to fetch today's data from NSE first
+  nse_data = await fetch_fii_dii_from_nse()
+  
+  # If NSE only returned today, try to get historical data from MongoDB
+  # Over time, MongoDB will accumulate data as we cache each day
+  
+  # Get historical data from MongoDB (past week)
+  historical_data = []
+  try:
+    db = get_db()
+    # Get last 7 days from MongoDB
+    docs = await db.fii_dii.find().sort("date", -1).limit(7).to_list(7)
+    if docs:
+      historical_data = [FiiDiiDay(**d) for d in docs]
+      print(f"Found {len(historical_data)} days in MongoDB cache")
+  except Exception as e:
+    print(f"Error fetching from MongoDB: {e}")
+  
+  # Combine NSE data (today) with historical data (past days)
+  all_days = {}
+  
+  # Add historical data first
+  for day in historical_data:
+    date_key = day.date.date().isoformat() if isinstance(day.date, datetime) else str(day.date)
+    all_days[date_key] = day
+  
+  # Add/update with today's NSE data (overwrites if exists)
+  if nse_data:
+    for day in nse_data:
+      date_key = day.date.date().isoformat() if isinstance(day.date, datetime) else str(day.date)
+      all_days[date_key] = day
+      # Cache today's data in MongoDB
+      try:
+        db = get_db()
+        await db.fii_dii.update_one(
+          {"date": day.date},
+          {"$set": {"date": day.date, "fii_net": day.fii_net, "dii_net": day.dii_net}},
+          upsert=True
+        )
+      except Exception as e:
+        print(f"Error caching FII/DII data: {e}")
+  
+  # Sort by date descending and return available real data (up to 7 days)
+  if all_days:
+    sorted_days = sorted(all_days.values(), key=lambda d: d.date if isinstance(d.date, datetime) else datetime.fromisoformat(str(d.date)), reverse=True)
+    return FiiDiiResponse(days=sorted_days[:7])  # Return up to 7 days of real data
+  
+  # No data available - return empty array (no sample data)
+  print("No FII/DII data available - returning empty array")
+  return FiiDiiResponse(days=[])
 
 
 @router.get("/quote")
@@ -1428,6 +1797,10 @@ class OiIvAnalyticsResponse(BaseModel):
   volume_oi_ratio: Optional[float] = None
   trend: Optional[str] = None
   anomaly_score: Optional[float] = None
+  # Volatility metrics
+  hv: Optional[float] = None               # Historical Volatility (annualised, decimal)
+  iv_rank: Optional[float] = None          # IV Rank (0-100)
+  iv_percentile: Optional[float] = None    # IV Percentile (0-100)
   # Probability snapshot and action hint
   atm_strike: Optional[float] = None
   dte_used: Optional[int] = None
@@ -1479,12 +1852,25 @@ async def get_oi_iv_analytics(symbol: str, expiry: Optional[str] = None):
   strikes_set: set[float] = set()
   strike_to_iv_vals: dict[float, list[float]] = {}
   for e in entries:
-    s_raw = e.get("strike") if isinstance(e, dict) else getattr(e, "strike", None)
+    # Handle Pydantic model objects (OptionChainEntry)
+    s_raw = getattr(e, "strike", None)
     s = to_num(s_raw)
-    t = (e.get("option_type") if isinstance(e, dict) else getattr(e, "option_type", None)) or ""
-    vol = e.get("volume") if isinstance(e, dict) else getattr(e, "volume", None)
-    oi = e.get("open_interest") if isinstance(e, dict) else getattr(e, "open_interest", None)
-    ivv = e.get("iv") if isinstance(e, dict) else getattr(e, "iv", None)
+    
+    # Get option_type - handle both enum and string
+    opt_type = getattr(e, "option_type", None)
+    if opt_type is not None:
+      # If it's an enum, get its value
+      if hasattr(opt_type, "value"):
+        t = str(opt_type.value).upper()
+      else:
+        t = str(opt_type).upper()
+    else:
+      t = ""
+    
+    vol = getattr(e, "volume", None)
+    oi = getattr(e, "open_interest", None)
+    ivv = getattr(e, "iv", None)
+    
     if s is not None:
       strikes_set.add(float(s))
       ivn = to_num(ivv)
@@ -1493,15 +1879,17 @@ async def get_oi_iv_analytics(symbol: str, expiry: Optional[str] = None):
         if iv_norm > 1.0:
           iv_norm = iv_norm / 100.0
         strike_to_iv_vals.setdefault(float(s), []).append(iv_norm)
+    
     vn = to_num(vol)
     if vn is not None:
-      if str(t).upper().startswith("P"):
+      if t.startswith("P") or t == "PUT":
         put_vol += float(vn)
       else:
         call_vol += float(vn)
+    
     oin = to_num(oi)
     if oin is not None:
-      if str(t).upper().startswith("P"):
+      if t.startswith("P") or t == "PUT":
         put_oi += float(oin)
       else:
         call_oi += float(oin)
@@ -1528,6 +1916,64 @@ async def get_oi_iv_analytics(symbol: str, expiry: Optional[str] = None):
     vals = strike_to_iv_vals[float(atm_strike)]
     if vals:
       iv_atm = float(sum(vals) / len(vals))
+
+  # Collect all IV values from chain to use as proxy historical series
+  all_iv_values: List[float] = []
+  for strike_ivs in strike_to_iv_vals.values():
+    all_iv_values.extend(strike_ivs)
+  
+  # Calculate IV Rank and IV Percentile using chain IVs as proxy history
+  iv_rank = None
+  iv_percentile = None
+  if iv_atm is not None and all_iv_values:
+    iv_rank = vol_svc.iv_rank(iv_atm, all_iv_values)
+    iv_percentile = vol_svc.iv_percentile(iv_atm, all_iv_values)
+  
+  # Calculate HV: Try to get from historical price data, or use a simple estimate
+  hv = None
+  if spot_val:
+    try:
+      # Try to get historical candles for HV calculation
+      gw = get_upstox_gateway()
+      if gw:
+        from app.utils.instruments_config import find_instrument_by_symbol
+        inst_cfg = find_instrument_by_symbol(symbol)
+        if inst_cfg:
+          instrument_key = inst_cfg.instrumentKey
+          from datetime import datetime, timedelta
+          end_date = datetime.utcnow().strftime("%Y-%m-%d")
+          start_date = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
+          try:
+            candles = gw.get_historical_candles(
+              instrument_key=instrument_key,
+              start=start_date,
+              end=end_date,
+              interval="1D"
+            )
+            if candles and len(candles) > 1:
+              # Calculate returns from close prices
+              closes = []
+              for c in candles:
+                if isinstance(c, dict):
+                  close = to_num(c.get("close") or c.get("c"))
+                  if close:
+                    closes.append(close)
+              if len(closes) > 1:
+                returns = []
+                for i in range(1, len(closes)):
+                  if closes[i-1] > 0:
+                    ret = (closes[i] - closes[i-1]) / closes[i-1]
+                    returns.append(ret)
+                if returns:
+                  hv = vol_svc.historical_volatility(returns)
+          except (NotImplementedError, Exception):
+            # If historical data not available, estimate HV as ~80% of ATM IV (common relationship)
+            if iv_atm:
+              hv = iv_atm * 0.8
+    except Exception:
+      # Fallback: estimate HV from IV if available
+      if iv_atm:
+        hv = iv_atm * 0.8
 
   # Skew: collect up to 5 strikes around ATM (±2 on both sides)
   skew_strikes: List[float] = []
@@ -1559,7 +2005,7 @@ async def get_oi_iv_analytics(symbol: str, expiry: Optional[str] = None):
     # Try to infer nearest expiry days from entries if expiry present
     expiries: List[datetime] = []
     for e in entries:
-      expiry_raw = e.get("expiry") if isinstance(e, dict) else getattr(e, "expiry", None)
+      expiry_raw = getattr(e, "expiry", None)
       if isinstance(expiry_raw, datetime):
         expiries.append(expiry_raw)
       elif isinstance(expiry_raw, str):
@@ -1622,6 +2068,9 @@ async def get_oi_iv_analytics(symbol: str, expiry: Optional[str] = None):
     volume_oi_ratio=volume_oi_ratio,
     trend=trend,
     anomaly_score=anomaly_score,
+    hv=hv,
+    iv_rank=iv_rank,
+    iv_percentile=iv_percentile,
     atm_strike=float(atm_strike) if atm_strike is not None else None,
     dte_used=int(dte_used) if dte_used is not None else None,
     prob_above_atm=prob_above_atm,

@@ -4,8 +4,6 @@ from typing import Callable, Awaitable
 
 import numpy as np
 
-from app.main import signal_manager
-
 
 async def mock_upstox_tick_stream(
   symbol: str,
@@ -26,6 +24,9 @@ async def mock_upstox_tick_stream(
 
 
 async def start_live_engine(symbols: list[str]) -> None:
+  # Lazy import to avoid circular dependency
+  from app.main import signal_manager
+  
   async def on_tick(tick: dict):
     await signal_manager.broadcast({"type": "tick", "data": tick})
 

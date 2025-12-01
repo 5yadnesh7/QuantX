@@ -1,76 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import useStore from '../state/store';
 import TimeSeriesChart from '../charts/TimeSeriesChart';
-
-const strategyPresets = {
-  meanReversion: {
-    name: 'Mean Reversion Call',
-    mode: 'BACKTEST',
-    conditions: [{ indicator: 'iv_rank', operator: '>', threshold: 50 }],
-    filters: [{ name: 'min_volume', params: { value: 100000 } }],
-    actions: [{ side: 'BUY', quantity: 1, instrument: 'ATM_CALL' }],
-    exits: [{ type: 'take_profit', value: 0.3 }],
-    multi_leg: false,
-  },
-  breakout: {
-    name: 'Breakout Call',
-    mode: 'BACKTEST',
-    conditions: [{ indicator: 'price_above_vwap', operator: '>', threshold: 0 }],
-    filters: [{ name: 'min_volume', params: { value: 200000 } }],
-    actions: [{ side: 'BUY', quantity: 1, instrument: 'OTM_CALL' }],
-    exits: [{ type: 'stop_loss', value: 0.2 }],
-    multi_leg: false,
-  },
-  ironCondor: {
-    name: 'Iron Condor',
-    mode: 'BACKTEST',
-    conditions: [{ indicator: 'iv_rank', operator: '>', threshold: 40 }],
-    filters: [],
-    actions: [
-      { side: 'SELL', quantity: 1, instrument: 'SHORT_OTM_CALL' },
-      { side: 'SELL', quantity: 1, instrument: 'SHORT_OTM_PUT' },
-      { side: 'BUY', quantity: 1, instrument: 'LONG_FURTHER_OTM_CALL' },
-      { side: 'BUY', quantity: 1, instrument: 'LONG_FURTHER_OTM_PUT' },
-    ],
-    exits: [{ type: 'time_exit', value: 5 }],
-    multi_leg: true,
-  },
-  pcrBullish: {
-    name: 'PCR Bullish (Low PCR)',
-    mode: 'BACKTEST',
-    conditions: [{ indicator: 'pcr_oi', operator: '<', threshold: 0.7 }],
-    filters: [{ name: 'min_volume', params: { value: 150000 } }],
-    actions: [{ side: 'BUY', quantity: 1, instrument: 'ATM_CALL' }],
-    exits: [{ type: 'take_profit', value: 0.25 }, { type: 'stop_loss', value: 0.15 }],
-    multi_leg: false,
-  },
-  pcrBearish: {
-    name: 'PCR Bearish (High PCR)',
-    mode: 'BACKTEST',
-    conditions: [{ indicator: 'pcr_oi', operator: '>', threshold: 1.2 }],
-    filters: [{ name: 'min_volume', params: { value: 150000 } }],
-    actions: [{ side: 'BUY', quantity: 1, instrument: 'ATM_PUT' }],
-    exits: [{ type: 'take_profit', value: 0.25 }, { type: 'stop_loss', value: 0.15 }],
-    multi_leg: false,
-  },
-  pcrContrarian: {
-    name: 'PCR Contrarian (Extreme PCR)',
-    mode: 'BACKTEST',
-    conditions: [
-      { indicator: 'pcr_oi', operator: '>', threshold: 1.5 },
-      { indicator: 'iv_rank', operator: '>', threshold: 40 },
-    ],
-    filters: [{ name: 'min_volume', params: { value: 200000 } }],
-    actions: [{ side: 'BUY', quantity: 1, instrument: 'ATM_CALL' }],
-    exits: [{ type: 'take_profit', value: 0.3 }, { type: 'time_exit', value: 3 }],
-    multi_leg: false,
-  },
-};
+import { getStrategies } from '../api/client';
 
 export default function BacktestStudio() {
   const { instruments, selectedSymbol, loadInstruments, backtestResult, runBacktestAndStore, error } = useStore();
   const [capital, setCapital] = useState(100000);
-  const [preset, setPreset] = useState('meanReversion');
+  const [selectedStrategyName, setSelectedStrategyName] = useState('');
+  const [strategies, setStrategies] = useState([]);
+  const [loadingStrategies, setLoadingStrategies] = useState(false);
 
   useEffect(() => {
     if (!instruments.length) {
@@ -78,13 +16,47 @@ export default function BacktestStudio() {
     }
   }, [instruments.length, loadInstruments]);
 
+  useEffect(() => {
+    loadStrategies();
+  }, []);
+
+  const loadStrategies = async () => {
+    try {
+      setLoadingStrategies(true);
+      const res = await getStrategies();
+      const allStrategies = res.data.strategies || [];
+      setStrategies(allStrategies);
+      // Set default to first strategy if available
+      if (allStrategies.length > 0 && !selectedStrategyName) {
+        setSelectedStrategyName(allStrategies[0].name);
+      }
+    } catch (e) {
+      console.error('Failed to load strategies:', e);
+    } finally {
+      setLoadingStrategies(false);
+    }
+  };
+
   const handleRun = () => {
+    // Find the selected strategy
+    const strategy = strategies.find(s => s.name === selectedStrategyName);
+    if (!strategy) {
+      alert('Please select a strategy');
+      return;
+    }
+
+    // Convert strategy to backtest format (ensure mode is BACKTEST)
+    const backtestStrategy = {
+      ...strategy,
+      mode: 'BACKTEST',
+    };
+
     runBacktestAndStore({
       symbol: selectedSymbol || instruments[0]?.symbol || '',
       start_date: new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString(),
       end_date: new Date().toISOString(),
       initial_capital: Number(capital),
-      strategy: strategyPresets[preset],
+      strategy: backtestStrategy,
     });
   };
 
@@ -118,18 +90,24 @@ export default function BacktestStudio() {
             />
           </div>
           <div>
-            <label className="block text-slate-400 text-[11px]">Strategy preset</label>
+            <label className="block text-slate-400 text-[11px]">Strategy</label>
             <select
-              value={preset}
-              onChange={(e) => setPreset(e.target.value)}
-              className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[11px]"
+              value={selectedStrategyName}
+              onChange={(e) => setSelectedStrategyName(e.target.value)}
+              className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[11px] min-w-[200px]"
+              disabled={loadingStrategies}
             >
-              <option value="meanReversion">Mean reversion call</option>
-              <option value="breakout">Breakout call</option>
-              <option value="ironCondor">Iron condor</option>
-              <option value="pcrBullish">PCR Bullish (Low PCR)</option>
-              <option value="pcrBearish">PCR Bearish (High PCR)</option>
-              <option value="pcrContrarian">PCR Contrarian (Extreme)</option>
+              {loadingStrategies ? (
+                <option>Loading strategies...</option>
+              ) : strategies.length === 0 ? (
+                <option>No strategies available</option>
+              ) : (
+                strategies.map((strategy) => (
+                  <option key={strategy.name} value={strategy.name}>
+                    {strategy.name} {strategy.is_default ? '(Default)' : ''}
+                  </option>
+                ))
+              )}
             </select>
           </div>
           <button

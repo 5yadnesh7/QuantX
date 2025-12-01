@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
-import { saveStrategy } from '../api/client';
+import { saveStrategy, getStrategy } from '../api/client';
 
 const initialBlocks = [
   { id: 'cond-price-gt-vwap', type: 'condition', label: 'Price > VWAP', payload: { indicator: 'price_above_vwap', operator: '>', threshold: 0 } },
@@ -15,8 +16,50 @@ const initialBlocks = [
   { id: 'exit-sl', type: 'exit', label: 'SL 15%', payload: { type: 'stop_loss', value: 0.15 } },
 ];
 
+// Helper function to convert payload back to block format
+const payloadToBlock = (payload, type, index) => {
+  let label = '';
+  if (type === 'condition') {
+    const { indicator, operator, threshold } = payload;
+    if (indicator === 'pcr_oi') {
+      if (operator === '<') label = `PCR (OI) < ${threshold} (Bullish)`;
+      else if (operator === '>') {
+        if (threshold >= 1.5) label = `PCR (OI) > ${threshold} (Extreme)`;
+        else label = `PCR (OI) > ${threshold} (Bearish)`;
+      }
+    } else if (indicator === 'iv_rank') {
+      label = `IV Rank ${operator} ${threshold}`;
+    } else if (indicator === 'price_above_vwap') {
+      label = `Price > VWAP`;
+    }
+  } else if (type === 'filter') {
+    const { name: filterName, params } = payload;
+    if (filterName === 'min_volume') {
+      label = `Volume > ${params?.value || 0}`;
+    }
+  } else if (type === 'action') {
+    const { side, quantity, instrument } = payload;
+    label = `${side} ${quantity}x ${instrument}`;
+  } else if (type === 'exit') {
+    const { type: exitType, value } = payload;
+    if (exitType === 'take_profit') label = `TP ${(value * 100).toFixed(0)}%`;
+    else if (exitType === 'stop_loss') label = `SL ${(value * 100).toFixed(0)}%`;
+  }
+  
+  return {
+    id: `${type}-${index}-${Date.now()}`,
+    type,
+    label: label || `${type} ${index}`,
+    payload,
+  };
+};
+
 export default function StrategyBuilder() {
-  const [name, setName] = useState('Mean Reversion Call');
+  const [searchParams] = useSearchParams();
+  const strategyNameParam = searchParams.get('strategy');
+  const newNameParam = searchParams.get('name');
+  
+  const [name, setName] = useState(newNameParam || 'Mean Reversion Call');
   const [available, setAvailable] = useState(initialBlocks);
   const [conditions, setConditions] = useState([]);
   const [filters, setFilters] = useState([]);
@@ -24,6 +67,44 @@ export default function StrategyBuilder() {
   const [exits, setExits] = useState([]);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  // Load strategy if name is provided in URL
+  useEffect(() => {
+    if (strategyNameParam) {
+      loadStrategy(strategyNameParam);
+    } else if (newNameParam) {
+      setName(newNameParam);
+    }
+  }, [strategyNameParam, newNameParam]);
+
+  const loadStrategy = async (strategyName) => {
+    try {
+      setLoading(true);
+      const res = await getStrategy(strategyName);
+      const strategy = res.data.strategy;
+      
+      setName(strategy.name || strategyName);
+      
+      // Convert strategy JSON back to blocks
+      const loadedConditions = (strategy.conditions || []).map((c, i) => payloadToBlock(c, 'condition', i));
+      const loadedFilters = (strategy.filters || []).map((f, i) => payloadToBlock(f, 'filter', i));
+      const loadedActions = (strategy.actions || []).map((a, i) => payloadToBlock(a, 'action', i));
+      const loadedExits = (strategy.exits || []).map((e, i) => payloadToBlock(e, 'exit', i));
+      
+      setConditions(loadedConditions);
+      setFilters(loadedFilters);
+      setActions(loadedActions);
+      setExits(loadedExits);
+      
+      setStatus(`Loaded strategy "${strategyName}"`);
+    } catch (e) {
+      console.error(e);
+      setStatus(`Failed to load strategy "${strategyName}" – check backend / network.`);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const onDragEnd = (result) => {
     if (!result.destination) return;
@@ -82,15 +163,23 @@ export default function StrategyBuilder() {
             value={name}
             onChange={(e) => setName(e.target.value)}
             className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[11px] w-56"
+            placeholder="Strategy name"
           />
           <button
             onClick={handleSave}
-            className="bg-accent hover:bg-accentSoft text-black text-xs font-semibold px-3 py-1 rounded"
+            disabled={saving || loading}
+            className="bg-accent hover:bg-accentSoft text-black text-xs font-semibold px-3 py-1 rounded disabled:opacity-50"
           >
             {saving ? 'Saving…' : 'Save strategy'}
           </button>
         </div>
       </div>
+
+      {loading && (
+        <div className="bg-blue-900/20 border border-blue-700/50 rounded px-2 py-1 text-[11px] text-blue-300">
+          Loading strategy...
+        </div>
+      )}
 
       <DragDropContext onDragEnd={onDragEnd}>
         <div className="grid grid-cols-4 gap-3">

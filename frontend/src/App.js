@@ -11,6 +11,7 @@ import ModelInsights from './pages/ModelInsights';
 import Logs from './pages/Logs';
 import Trades from './pages/Trades';
 import FiiDiiFlows from './pages/FiiDiiFlows';
+import AllStrategies from './pages/AllStrategies';
 import ShellLayout from './components/ShellLayout';
 
 function App() {
@@ -23,6 +24,7 @@ function App() {
           <Route path="/option-chain" element={<LiveOptionChain />} />
           <Route path="/probability" element={<ProbabilityHeatmap />} />
           <Route path="/oi-iv" element={<OiIvAnalytics />} />
+          <Route path="/strategies/all" element={<AllStrategies />} />
           <Route path="/strategy-builder" element={<StrategyBuilder />} />
           <Route path="/live-strategy" element={<LiveStrategyRunner />} />
           <Route path="/backtest" element={<BacktestStudio />} />

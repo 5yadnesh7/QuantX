@@ -1,16 +1,16 @@
 import React, { useEffect, useState, useRef } from 'react';
 import useStore from '../state/store';
 import TimeSeriesChart from '../charts/TimeSeriesChart';
-import { createSignalSocket } from '../api/ws';
+// import { createSignalSocket } from '../api/ws'; // Disabled - will be re-enabled later
 import { getDashboardPrediction } from '../api/client';
 
 export default function Dashboard() {
   const {
     selectedSymbol,
     selectedExpiry,
-    liveSignals,
+    // liveSignals, // Disabled - will be re-enabled later
     loadInstruments,
-    pushLiveSignal,
+    // pushLiveSignal, // Disabled - will be re-enabled later
   } = useStore();
 
   const [prediction, setPrediction] = useState(null);
@@ -125,17 +125,39 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSymbol, selectedExpiry, autoRefreshEnabled, refreshInterval]);
 
-  useEffect(() => {
-    const socket = createSignalSocket((msg) => {
-      if (msg.type === 'tick') {
-        pushLiveSignal(msg.data);
-      }
-    });
-    return () => socket.close();
-  }, [pushLiveSignal]);
+  // WebSocket connection disabled - will be re-enabled later with new plan
+  // useEffect(() => {
+  //   if (!selectedSymbol) return;
+
+  //   const socket = createSignalSocket((msg) => {
+  //     if (msg.type === 'tick') {
+  //       pushLiveSignal(msg.data);
+  //     }
+  //   }, selectedSymbol);
+
+  //   // Subscribe when socket is ready (handles both initial connection and reconnection)
+  //   const handleSubscribe = () => {
+  //     if (selectedSymbol && socket.readyState === WebSocket.OPEN) {
+  //       socket.subscribe(selectedSymbol);
+  //     }
+  //   };
+
+  //   // If socket is already open, subscribe immediately
+  //   if (socket.readyState === WebSocket.OPEN) {
+  //     handleSubscribe();
+  //   } else {
+  //     // Otherwise wait for open event
+  //     socket.addEventListener('open', handleSubscribe);
+  //   }
+
+  //   return () => {
+  //     socket.removeEventListener('open', handleSubscribe);
+  //     socket.close();
+  //   };
+  // }, [selectedSymbol, pushLiveSignal]);
 
   const currentSymbolHistory = selectedSymbol ? history[selectedSymbol] || [] : [];
-  const hasTicks = liveSignals && liveSignals.length > 0;
+  // const hasTicks = liveSignals && liveSignals.length > 0; // Disabled - will be re-enabled later
 
   const p = prediction;
   const titleSymbol = selectedSymbol || 'instrument';
@@ -285,12 +307,13 @@ export default function Dashboard() {
             </span>
           </div>
 
-          <div className="flex items-center justify-between">
+          {/* WebSocket ticks status disabled - will be re-enabled later with new plan */}
+          {/* <div className="flex items-center justify-between">
             <span className="text-slate-400">Websocket ticks</span>
             <span className={hasTicks ? 'text-positive' : 'text-slate-500'}>
               {hasTicks ? `✓ ${liveSignals.length} ticks` : '✗ No ticks'}
             </span>
-          </div>
+          </div> */}
 
           {selectedSymbol && (
             <div className="mt-2 pt-2 border-t border-slate-800 text-[10px] text-slate-500">
@@ -336,7 +359,8 @@ export default function Dashboard() {
         )}
       </div>
 
-      <div className="bg-surface rounded border border-slate-800 p-3 text-xs">
+      {/* WebSocket ticks display disabled - will be re-enabled later with new plan */}
+      {/* <div className="bg-surface rounded border border-slate-800 p-3 text-xs">
         <div className="mb-2 flex items-center justify-between">
           <div className="text-slate-200 font-semibold">Recent Live Ticks</div>
           <div className="text-[10px] text-slate-400">
@@ -369,7 +393,7 @@ export default function Dashboard() {
             </div>
           )}
         </div>
-      </div>
+      </div> */}
     </div>
   );
 }

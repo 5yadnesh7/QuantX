@@ -20,6 +20,7 @@ services:
       - quantx-net
     volumes:
       - ./backend/app:/app/app
+      - ./backend/config:/app/config
 
   frontend:
     build:

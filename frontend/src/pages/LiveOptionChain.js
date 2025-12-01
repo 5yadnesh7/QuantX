@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import useStore from '../state/store';
 import { getQuote } from '../api/client';
 
@@ -10,6 +10,14 @@ export default function LiveOptionChain() {
     loadInstruments,
     loadLiveChain,
   } = useStore();
+
+  // Auto-refresh state
+  const refreshIntervalRef = useRef(null);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
+  const [refreshInterval, setRefreshInterval] = useState(5); // seconds
+  const [loadingChain, setLoadingChain] = useState(false);
+  const [error, setError] = useState(null);
+  const [lastUpdate, setLastUpdate] = useState(null);
 
   // Base cell class for consistent styling (padding, borders, font, box-sizing, numeric alignment)
   const baseCellClass = 'px-2 py-1 box-border text-[11px]';
@@ -51,14 +59,140 @@ export default function LiveOptionChain() {
     return formatted;
   };
 
+  // Format volume/OI numbers with k (thousands), L (lakhs), and C (crores) for readability
+  const formatVolumeOI = (num) => {
+    if (typeof num !== 'number' || !isFinite(num) || num === 0) return '—';
+    
+    const absNum = Math.abs(num);
+    
+    // If >= 1 crore (10,000,000), format as C
+    if (absNum >= 10000000) {
+      const crores = absNum / 10000000;
+      // Show 1 decimal place if needed, otherwise whole number
+      if (crores >= 10) {
+        return crores.toFixed(0) + 'C';
+      } else {
+        return crores.toFixed(1) + 'C';
+      }
+    }
+    
+    // If >= 1 lakh (100,000) but < 1 crore, format as L
+    if (absNum >= 100000) {
+      const lakhs = absNum / 100000;
+      // Show 1 decimal place if needed, otherwise whole number
+      if (lakhs >= 10) {
+        return lakhs.toFixed(0) + 'L';
+      } else {
+        return lakhs.toFixed(1) + 'L';
+      }
+    }
+    
+    // If >= 1 thousand, format as k
+    if (absNum >= 1000) {
+      const thousands = absNum / 1000;
+      // Show 1 decimal place if needed, otherwise whole number
+      if (thousands >= 10) {
+        return thousands.toFixed(0) + 'k';
+      } else {
+        return thousands.toFixed(1) + 'k';
+      }
+    }
+    
+    // Otherwise, show as whole number
+    return Math.round(absNum).toString();
+  };
+
+  // Simple market-hours gate: only call live chain API when Indian market is open
+  // NSE eq derivatives regular session: Mon–Fri, 09:15–15:30 IST
+  const isMarketOpen = () => {
+    try {
+      const now = new Date();
+      const istNow = new Date(
+        now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })
+      );
+      const day = istNow.getDay(); // 0=Sun,6=Sat
+      if (day === 0 || day === 6) return false;
+      const h = istNow.getHours();
+      const m = istNow.getMinutes();
+      const minutes = h * 60 + m;
+      const open = 9 * 60 + 15;
+      const close = 15 * 60 + 30;
+      return minutes >= open && minutes <= close;
+    } catch {
+      // If timezone conversion fails, be safe and allow
+      return true;
+    }
+  };
+
   useEffect(() => {
     loadInstruments();
   }, [loadInstruments]);
 
-  useEffect(() => {
+  // Fetch chain data function
+  const fetchChain = async () => {
     if (!selectedSymbol || !selectedExpiry) return;
-    loadLiveChain(selectedSymbol, selectedExpiry);
-  }, [selectedSymbol, selectedExpiry, loadLiveChain]);
+    // Avoid overlapping requests if a previous one is still in flight
+    if (loadingChain) return;
+    
+    try {
+      if (!isMarketOpen()) {
+        setError('Market appears closed – live chain API is paused.');
+        return;
+      }
+
+      setLoadingChain(true);
+      setError(null);
+      
+      // Fetch both chain data and spot price in parallel
+      await Promise.all([
+        loadLiveChain(selectedSymbol, selectedExpiry),
+        getQuote(selectedSymbol).then((response) => {
+          const price = response?.data?.price || response?.data?.last || null;
+          setSpot(price);
+        }).catch(() => {
+          // Keep previous spot price if fetch fails
+        })
+      ]);
+      
+      setLastUpdate(new Date());
+    } catch (e) {
+      console.error(e);
+      setError('Could not fetch option chain – check backend / network.');
+    } finally {
+      setLoadingChain(false);
+    }
+  };
+
+  // Auto-refresh: call backend chain API when market is open and auto-refresh is enabled.
+  useEffect(() => {
+    if (refreshIntervalRef.current) {
+      clearInterval(refreshIntervalRef.current);
+      refreshIntervalRef.current = null;
+    }
+
+    if (!selectedSymbol || !selectedExpiry) {
+      setError(null);
+      setLastUpdate(null);
+      return;
+    }
+
+    // First fetch immediately for this symbol/expiry (if market open)
+    fetchChain();
+
+    if (autoRefreshEnabled && refreshInterval > 0) {
+      refreshIntervalRef.current = setInterval(() => {
+        fetchChain();
+      }, refreshInterval * 1000);
+    }
+
+    return () => {
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
+        refreshIntervalRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSymbol, selectedExpiry, autoRefreshEnabled, refreshInterval]);
 
   // Fetch spot price
   const [spot, setSpot] = useState(null);
@@ -175,10 +309,56 @@ export default function LiveOptionChain() {
         <div className="flex flex-col gap-1">
           <h1 className="text-xl font-semibold">Live Option Chain</h1>
           <div className="text-[11px] text-slate-400">
-            {selectedSymbol || '—'} {selectedExpiry ? `• ${selectedExpiry}` : ''}
+            {selectedSymbol || '—'} {selectedExpiry ? `• ${selectedExpiry}` : ''}.{' '}
+            {autoRefreshEnabled && refreshInterval > 0
+              ? `Auto-refresh: ${refreshInterval}s`
+              : 'Auto-refresh: Off'}
+            {loadingChain && <span className="text-accent ml-1">(Loading...)</span>}
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          {lastUpdate && (
+            <span className="text-[10px] text-slate-500">
+              Updated: {lastUpdate.toLocaleTimeString()}
+            </span>
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setAutoRefreshEnabled(!autoRefreshEnabled)}
+              className={`px-2 py-1 rounded text-[10px] font-semibold ${
+                autoRefreshEnabled
+                  ? 'bg-red-600 hover:bg-red-700 text-white'
+                  : 'bg-green-600 hover:bg-green-700 text-white'
+              }`}
+            >
+              {autoRefreshEnabled ? '⏸ Stop' : '▶ Start'}
+            </button>
+            <button
+              onClick={fetchChain}
+              className="px-2 py-1 rounded text-[10px] font-semibold bg-accent hover:bg-accentSoft text-black"
+            >
+              ⟳ Refresh
+            </button>
+            <select
+              value={refreshInterval}
+              onChange={(e) => setRefreshInterval(Number(e.target.value))}
+              disabled={!autoRefreshEnabled}
+              className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[10px] w-24"
+            >
+              <option value={5}>5 seconds</option>
+              <option value={10}>10 seconds</option>
+              <option value={30}>30 seconds</option>
+              <option value={60}>60 seconds</option>
+            </select>
           </div>
         </div>
       </div>
+
+      {error && (
+        <div className="bg-red-900/40 border border-red-700/50 rounded px-3 py-2 text-red-300 text-[11px]">
+          {error}
+        </div>
+      )}
 
       <div className="bg-surface rounded border border-slate-800 overflow-hidden">
         <div className="border-b border-slate-800 px-3 py-2 flex justify-between items-center text-[11px] text-slate-400">
@@ -229,28 +409,28 @@ export default function LiveOptionChain() {
               </tr>
               <tr className="text-slate-400">
                 {/* Call side columns */}
-                <th className={`${baseCellClass} text-right border-r border-slate-700`}>Agg OI (3)</th>
-                <th className={`${baseCellClass} text-right border-r border-slate-700`}>Agg Vol (3)</th>
-                <th className={`${baseCellClass} text-right border-r border-slate-700`}>OI</th>
-                <th className={`${baseCellClass} text-right border-r border-slate-700`}>Volume</th>
-                <th className={`${baseCellClass} text-right border-r border-slate-700`}>Gamma</th>
-                <th className={`${baseCellClass} text-right border-r border-slate-700`}>Vega</th>
-                <th className={`${baseCellClass} text-right border-r border-slate-700`}>Theta</th>
-                <th className={`${baseCellClass} text-right border-r border-slate-700`}>Delta</th>
-                <th className={`${baseCellClass} text-right border-r border-slate-700`}>IV</th>
-                <th className={`${baseCellClass} text-right border-r border-slate-700`}>Price</th>
+                <th className={`${baseCellClass} text-center border-r border-slate-700`}>Agg OI (3)</th>
+                <th className={`${baseCellClass} text-center border-r border-slate-700`}>Agg Vol (3)</th>
+                <th className={`${baseCellClass} text-center border-r border-slate-700`}>OI</th>
+                <th className={`${baseCellClass} text-center border-r border-slate-700`}>Volume</th>
+                <th className={`${baseCellClass} text-center border-r border-slate-700`}>Gamma</th>
+                <th className={`${baseCellClass} text-center border-r border-slate-700`}>Vega</th>
+                <th className={`${baseCellClass} text-center border-r border-slate-700`}>Theta</th>
+                <th className={`${baseCellClass} text-center border-r border-slate-700`}>Delta</th>
+                <th className={`${baseCellClass} text-center border-r border-slate-700`}>IV</th>
+                <th className={`${baseCellClass} text-center border-r border-slate-700`}>Price</th>
                 <th className={`${baseCellClass} text-center border-l-4 border-r-4 border-t-2 border-b-2 border-slate-500 bg-slate-700`}>Strike</th>
                 {/* Put side columns */}
-                <th className={`${baseCellClass} text-right border-l border-slate-700`}>Price</th>
-                <th className={`${baseCellClass} text-right border-l border-slate-700`}>IV</th>
-                <th className={`${baseCellClass} text-right border-l border-slate-700`}>Delta</th>
-                <th className={`${baseCellClass} text-right border-l border-slate-700`}>Theta</th>
-                <th className={`${baseCellClass} text-right border-l border-slate-700`}>Gamma</th>
-                <th className={`${baseCellClass} text-right border-l border-slate-700`}>Vega</th>
-                <th className={`${baseCellClass} text-right border-l border-slate-700`}>Volume</th>
-                <th className={`${baseCellClass} text-right border-l border-slate-700`}>OI</th>
-                <th className={`${baseCellClass} text-right border-l border-slate-700`}>Agg Vol (3)</th>
-                <th className={`${baseCellClass} text-right border-l border-slate-700`}>Agg OI (3)</th>
+                <th className={`${baseCellClass} text-center border-l border-slate-700`}>Price</th>
+                <th className={`${baseCellClass} text-center border-l border-slate-700`}>IV</th>
+                <th className={`${baseCellClass} text-center border-l border-slate-700`}>Delta</th>
+                <th className={`${baseCellClass} text-center border-l border-slate-700`}>Theta</th>
+                <th className={`${baseCellClass} text-center border-l border-slate-700`}>Gamma</th>
+                <th className={`${baseCellClass} text-center border-l border-slate-700`}>Vega</th>
+                <th className={`${baseCellClass} text-center border-l border-slate-700`}>Volume</th>
+                <th className={`${baseCellClass} text-center border-l border-slate-700`}>OI</th>
+                <th className={`${baseCellClass} text-center border-l border-slate-700`}>Agg Vol (3)</th>
+                <th className={`${baseCellClass} text-center border-l border-slate-700`}>Agg OI (3)</th>
               </tr>
             </thead>
             <tbody>
@@ -282,11 +462,11 @@ export default function LiveOptionChain() {
                       return g.isFirst ? (
                         <td
                           rowSpan={g.span}
-                          className={`${baseCellClass} text-right align-middle border-r border-slate-700 ${
+                          className={`${baseCellClass} text-center align-middle border-r border-slate-700 ${
                             callITM ? 'bg-green-900/20' : ''
                           }`}
                         >
-                          {formatNumber(g.aggCallOi, 0)}
+                          {formatVolumeOI(g.aggCallOi)}
                         </td>
                       ) : null;
                     })()}
@@ -296,39 +476,39 @@ export default function LiveOptionChain() {
                       return g.isFirst ? (
                         <td
                           rowSpan={g.span}
-                          className={`${baseCellClass} text-right align-middle border-r border-slate-700 ${
+                          className={`${baseCellClass} text-center align-middle border-r border-slate-700 ${
                             callITM ? 'bg-green-900/20' : ''
                           }`}
                         >
-                          {formatNumber(g.aggCallVol, 0)}
+                          {formatVolumeOI(g.aggCallVol)}
                         </td>
                       ) : null;
                     })()}
                     {/* Per-row CALL data */}
-                    <td className={`${baseCellClass} text-right border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
-                      {formatNumber(c.open_interest, 0)}
+                    <td className={`${baseCellClass} text-center border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
+                      {formatVolumeOI(c.open_interest)}
                     </td>
-                    <td className={`${baseCellClass} text-right border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
-                      {formatNumber(c.volume, 0)}
+                    <td className={`${baseCellClass} text-center border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
+                      {formatVolumeOI(c.volume)}
                     </td>
                     {/* CALL Gamma */}
-                    <td className={`${baseCellClass} text-right border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
+                    <td className={`${baseCellClass} text-center border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
                       {formatNumber(c.gamma, 4)}
                     </td>
                     {/* CALL Vega */}
-                    <td className={`${baseCellClass} text-right border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
+                    <td className={`${baseCellClass} text-center border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
                       {formatNumber(c.vega, 4)}
                     </td>
-                    <td className={`${baseCellClass} text-right border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
+                    <td className={`${baseCellClass} text-center border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
                       {formatNumber(c.theta, 4)}
                     </td>
-                    <td className={`${baseCellClass} text-right border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
+                    <td className={`${baseCellClass} text-center border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
                       {formatNumber(c.delta, 4)}
                     </td>
-                    <td className={`${baseCellClass} text-right border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
+                    <td className={`${baseCellClass} text-center border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
                       {typeof c.iv === 'number' ? formatNumber(c.iv * 100, 2) + '%' : '—'}
                     </td>
-                    <td className={`${baseCellClass} text-right border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
+                    <td className={`${baseCellClass} text-center border-r border-slate-700 ${callITM ? 'bg-green-900/30' : ''}`}>
                       {formatNumber(c.last, 2)}
                     </td>
 
@@ -338,31 +518,31 @@ export default function LiveOptionChain() {
                     </td>
 
                     {/* Per-row PUT data */}
-                    <td className={`${baseCellClass} text-right border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
+                    <td className={`${baseCellClass} text-center border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
                       {formatNumber(p.last, 2)}
                     </td>
-                    <td className={`${baseCellClass} text-right border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
+                    <td className={`${baseCellClass} text-center border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
                       {typeof p.iv === 'number' ? formatNumber(p.iv * 100, 2) + '%' : '—'}
                     </td>
-                    <td className={`${baseCellClass} text-right border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
+                    <td className={`${baseCellClass} text-center border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
                       {formatNumber(p.delta, 4)}
                     </td>
-                    <td className={`${baseCellClass} text-right border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
+                    <td className={`${baseCellClass} text-center border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
                       {formatNumber(p.theta, 4)}
                     </td>
                     {/* PUT Gamma */}
-                    <td className={`${baseCellClass} text-right border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
+                    <td className={`${baseCellClass} text-center border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
                       {formatNumber(p.gamma, 4)}
                     </td>
                     {/* PUT Vega */}
-                    <td className={`${baseCellClass} text-right border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
+                    <td className={`${baseCellClass} text-center border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
                       {formatNumber(p.vega, 4)}
                     </td>
-                    <td className={`${baseCellClass} text-right border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
-                      {formatNumber(p.volume, 0)}
+                    <td className={`${baseCellClass} text-center border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
+                      {formatVolumeOI(p.volume)}
                     </td>
-                    <td className={`${baseCellClass} text-right border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
-                      {formatNumber(p.open_interest, 0)}
+                    <td className={`${baseCellClass} text-center border-l border-slate-700 ${putITM ? 'bg-red-900/30' : ''}`}>
+                      {formatVolumeOI(p.open_interest)}
                     </td>
                     {/* PUT aggregated Vol */}
                     {(() => {
@@ -370,11 +550,11 @@ export default function LiveOptionChain() {
                       return g.isFirst ? (
                         <td
                           rowSpan={g.span}
-                          className={`${baseCellClass} text-right align-middle border-l border-slate-700 ${
+                          className={`${baseCellClass} text-center align-middle border-l border-slate-700 ${
                             putITM ? 'bg-red-900/20' : ''
                           }`}
                         >
-                          {formatNumber(g.aggPutVol, 0)}
+                          {formatVolumeOI(g.aggPutVol)}
                         </td>
                       ) : null;
                     })()}
@@ -384,11 +564,11 @@ export default function LiveOptionChain() {
                       return g.isFirst ? (
                         <td
                           rowSpan={g.span}
-                          className={`${baseCellClass} text-right align-middle border-l border-slate-700 ${
+                          className={`${baseCellClass} text-center align-middle border-l border-slate-700 ${
                             putITM ? 'bg-red-900/20' : ''
                           }`}
                         >
-                          {formatNumber(g.aggPutOi, 0)}
+                          {formatVolumeOI(g.aggPutOi)}
                         </td>
                       ) : null;
                     })()}

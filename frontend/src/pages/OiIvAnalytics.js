@@ -45,9 +45,9 @@ export default function OiIvAnalytics() {
       });
       setIv({
         iv: typeof data.iv_atm === 'number' ? data.iv_atm : null,
-        hv: 0,
-        iv_rank: 0,
-        iv_percentile: 0,
+        hv: typeof data.hv === 'number' ? data.hv : null,
+        iv_rank: typeof data.iv_rank === 'number' ? data.iv_rank : null,
+        iv_percentile: typeof data.iv_percentile === 'number' ? data.iv_percentile : null,
       });
       setSkew({
         strikes: Array.isArray(data.strikes) ? data.strikes : [],
